@@ -10,6 +10,7 @@ import errorHandler from './middleware/errorMiddleware.js';
 
 import authRoutes      from './routes/authRoutes.js';
 import projectRoutes   from './routes/projectRoutes.js';
+import reviewRoutes    from './routes/reviewRoutes.js';
 import portfolioRoutes from './routes/portfolioRoutes.js';
 
 const app = express();
@@ -64,6 +65,7 @@ app.get('/api/health', (req, res) => {
 // ── Routes ─────────────────────────────────────────────────────────
 app.use('/api/auth',      authRoutes);
 app.use('/api/projects',  projectRoutes);
+app.use('/api/reviews',   reviewRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 
 // ── 404 Handler ────────────────────────────────────────────────────
