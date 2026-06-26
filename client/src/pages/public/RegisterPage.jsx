@@ -1,40 +1,27 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, GitBranch } from 'lucide-react';
 import { registerSchema } from '../../utils/validationSchemas.js';
-import { useAuth } from '../../context/AuthContext.jsx';
+import { useRegister } from '../../hooks/useAuthMutations.js';
 
 export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
-  const [serverError, setServerError] = useState('');
-  const { login } = useAuth();
-  const navigate = useNavigate();
+  const { mutate: register, isPending, error } = useRegister();
 
   const {
-    register,
+    register: formRegister,
     handleSubmit,
-    formState: { errors, isSubmitting },
+    formState: { errors },
   } = useForm({ resolver: zodResolver(registerSchema) });
 
-  const onSubmit = async (data) => {
-    setServerError('');
-    try {
-      // Phase 2 will replace this with: await apiClient.post('/auth/register', data)
-      await new Promise((r) => setTimeout(r, 600));
-      login({ name: data.name, email: data.email }, 'demo-token');
-      navigate('/dashboard', { replace: true });
-    } catch (err) {
-      setServerError('Could not create account. Please try again.');
-    }
-  };
+  const serverError = error?.response?.data?.message || error?.message;
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-base-950 px-4 py-10">
       <div className="absolute inset-x-0 top-0 -z-10 h-[500px] bg-aurora" />
-
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
@@ -46,54 +33,32 @@ export default function RegisterPage() {
           </span>
           AiCodeReviewer
         </Link>
-
         <h1 className="mt-6 text-center text-2xl font-bold text-ink-100">Create your account</h1>
         <p className="mt-1 text-center text-sm text-ink-500">Start reviewing your projects in minutes.</p>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="mt-6 flex flex-col gap-4">
+        <form onSubmit={handleSubmit((data) => register(data))} className="mt-6 flex flex-col gap-4">
           <div>
             <label className="label-text" htmlFor="name">Full name</label>
-            <input
-              id="name"
-              type="text"
-              autoComplete="name"
-              className="input-field"
-              placeholder="Adamya Mehta"
-              {...register('name')}
-            />
+            <input id="name" type="text" autoComplete="name" className="input-field"
+              placeholder="Adamya Mehta" {...formRegister('name')} />
             {errors.name && <p className="mt-1.5 text-xs text-accent-rose">{errors.name.message}</p>}
           </div>
 
           <div>
             <label className="label-text" htmlFor="email">Email</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              className="input-field"
-              placeholder="adamya@example.com"
-              {...register('email')}
-            />
+            <input id="email" type="email" autoComplete="email" className="input-field"
+              placeholder="adamya@example.com" {...formRegister('email')} />
             {errors.email && <p className="mt-1.5 text-xs text-accent-rose">{errors.email.message}</p>}
           </div>
 
           <div>
             <label className="label-text" htmlFor="password">Password</label>
             <div className="relative">
-              <input
-                id="password"
-                type={showPassword ? 'text' : 'password'}
-                autoComplete="new-password"
-                className="input-field pr-10"
-                placeholder="At least 8 characters"
-                {...register('password')}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                className="absolute inset-y-0 right-3 flex items-center text-ink-500 hover:text-ink-100"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-              >
+              <input id="password" type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password" className="input-field pr-10"
+                placeholder="At least 8 characters" {...formRegister('password')} />
+              <button type="button" onClick={() => setShowPassword(v => !v)}
+                className="absolute inset-y-0 right-3 flex items-center text-ink-500 hover:text-ink-100">
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
@@ -102,17 +67,10 @@ export default function RegisterPage() {
 
           <div>
             <label className="label-text" htmlFor="confirmPassword">Confirm password</label>
-            <input
-              id="confirmPassword"
-              type={showPassword ? 'text' : 'password'}
-              autoComplete="new-password"
-              className="input-field"
-              placeholder="Repeat your password"
-              {...register('confirmPassword')}
-            />
-            {errors.confirmPassword && (
-              <p className="mt-1.5 text-xs text-accent-rose">{errors.confirmPassword.message}</p>
-            )}
+            <input id="confirmPassword" type={showPassword ? 'text' : 'password'}
+              autoComplete="new-password" className="input-field"
+              placeholder="Repeat your password" {...formRegister('confirmPassword')} />
+            {errors.confirmPassword && <p className="mt-1.5 text-xs text-accent-rose">{errors.confirmPassword.message}</p>}
           </div>
 
           {serverError && (
@@ -121,16 +79,14 @@ export default function RegisterPage() {
             </div>
           )}
 
-          <button type="submit" disabled={isSubmitting} className="btn-primary mt-2 w-full py-2.5">
-            {isSubmitting ? 'Creating account...' : 'Create account'}
+          <button type="submit" disabled={isPending} className="btn-primary mt-2 w-full py-2.5">
+            {isPending ? 'Creating account...' : 'Create account'}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-ink-500">
           Already have an account?{' '}
-          <Link to="/login" className="font-medium text-accent-violet hover:underline">
-            Log in
-          </Link>
+          <Link to="/login" className="font-medium text-accent-violet hover:underline">Log in</Link>
         </p>
       </motion.div>
     </div>
