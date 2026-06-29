@@ -1,25 +1,35 @@
 import axios from 'axios';
 
-// Files and folders to completely ignore
+// Folders to completely skip
 const IGNORE_PATHS = [
   'node_modules', 'dist', 'build', '.next', 'out', 'coverage',
   '.git', '.cache', 'vendor', '__pycache__', '.venv', 'venv',
   'target', 'bin', 'obj', '.gradle', 'pods',
+  'public', 'static', 'assets', 'images', 'fonts', 'icons',
+  'styles', 'css', 'scss', 'less', 'storybook', '.storybook',
+  'migrations', 'seeds', 'fixtures', 'mocks', '__mocks__',
 ];
 
-// Only analyze these file extensions
+// Only these extensions will be read
 const ALLOWED_EXTENSIONS = [
-  '.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.go',
-  '.rs', '.cpp', '.c', '.cs', '.php', '.rb', '.swift',
-  '.kt', '.vue', '.svelte', '.html', '.css', '.scss',
-  '.json', '.yaml', '.yml', '.toml', '.env.example',
-  '.md', '.sh', '.dockerfile', 'dockerfile',
+  '.js', '.jsx', '.ts', '.tsx',
+  '.py', '.java', '.go', '.rs',
+  '.cpp', '.c', '.cs', '.php',
+  '.rb', '.swift', '.kt', '.vue',
+  '.svelte', '.md',
 ];
 
-// Max file size to read (50KB per file)
-const MAX_FILE_SIZE = 50000;
-// Max total characters to send to AI
-const MAX_TOTAL_CHARS = 8000;
+// Skip these specific filenames even if extension matches
+const IGNORE_FILENAMES = [
+  'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+  '.eslintrc', '.prettierrc', '.babelrc',
+  'jest.config.js', 'webpack.config.js', 'rollup.config.js',
+  'vite.config.js', 'next.config.js', 'nuxt.config.js',
+  'tailwind.config.js', 'postcss.config.js',
+];
+
+const MAX_FILE_SIZE  = 10000; // 10KB per file max
+const MAX_TOTAL_CHARS = 5000; // total chars sent to Groq
 
 const githubAxios = axios.create({
   baseURL: 'https://api.github.com',
@@ -38,79 +48,71 @@ export const parseGithubUrl = (url) => {
   return { owner: match[1], repo: match[2] };
 };
 
-// ── Fetch repository metadata ─────────────────────────────────────
+// ── Fetch repo metadata ───────────────────────────────────────────
 export const fetchRepoMetadata = async (owner, repo) => {
   try {
     const { data } = await githubAxios.get(`/repos/${owner}/${repo}`);
     return {
-      name: data.name,
-      description: data.description,
-      language: data.language,
-      stars: data.stargazers_count,
-      forks: data.forks_count,
-      size: data.size,
+      name:          data.name,
+      description:   data.description,
+      language:      data.language,
+      stars:         data.stargazers_count,
+      forks:         data.forks_count,
+      size:          data.size,
       defaultBranch: data.default_branch,
-      topics: data.topics || [],
-      license: data.license?.name || null,
-      hasReadme: false,
+      topics:        data.topics || [],
+      license:       data.license?.name || null,
     };
   } catch (err) {
-    if (err.response?.status === 404) {
-      throw new Error('Repository not found. Make sure it is public.');
-    }
-    if (err.response?.status === 403) {
-      throw new Error('GitHub API rate limit exceeded. Try again in an hour.');
-    }
+    if (err.response?.status === 404) throw new Error('Repository not found. Make sure it is public.');
+    if (err.response?.status === 403) throw new Error('GitHub API rate limit exceeded. Try again later.');
     throw new Error('Failed to fetch repository metadata.');
   }
 };
 
-// ── Fetch full file tree ──────────────────────────────────────────
+// ── Fetch file tree ───────────────────────────────────────────────
 export const fetchFileTree = async (owner, repo, branch = 'main') => {
   try {
     const { data } = await githubAxios.get(
       `/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`
     );
     return data.tree.filter((item) => item.type === 'blob');
-  } catch (err) {
-    // Try master branch if main fails
-    if (err.response?.status === 404) {
-      try {
-        const { data } = await githubAxios.get(
-          `/repos/${owner}/${repo}/git/trees/master?recursive=1`
-        );
-        return data.tree.filter((item) => item.type === 'blob');
-      } catch {
-        throw new Error('Could not fetch file tree. Check the repository branch.');
-      }
+  } catch {
+    try {
+      const { data } = await githubAxios.get(
+        `/repos/${owner}/${repo}/git/trees/master?recursive=1`
+      );
+      return data.tree.filter((item) => item.type === 'blob');
+    } catch {
+      throw new Error('Could not fetch file tree.');
     }
-    throw new Error('Failed to fetch file tree.');
   }
 };
 
-// ── Filter files worth analyzing ──────────────────────────────────
+// ── Filter files ──────────────────────────────────────────────────
 export const filterFiles = (files) => {
   return files.filter((file) => {
-    const path = file.path.toLowerCase();
+    const path     = file.path.toLowerCase();
+    const filename = path.split('/').pop();
 
     // Skip ignored folders
-    const isIgnored = IGNORE_PATHS.some((ignore) =>
+    const inIgnoredFolder = IGNORE_PATHS.some((ignore) =>
       path.includes(`/${ignore}/`) || path.startsWith(`${ignore}/`)
     );
-    if (isIgnored) return false;
+    if (inIgnoredFolder) return false;
+
+    // Skip ignored filenames
+    if (IGNORE_FILENAMES.some((f) => filename === f)) return false;
 
     // Skip files that are too large
     if (file.size > MAX_FILE_SIZE) return false;
 
-    // Only include allowed extensions
-    const hasAllowedExt = ALLOWED_EXTENSIONS.some((ext) =>
-      path.endsWith(ext)
-    );
-    return hasAllowedExt;
+    // Only allowed extensions
+    return ALLOWED_EXTENSIONS.some((ext) => path.endsWith(ext));
   });
 };
 
-// ── Fetch file content ────────────────────────────────────────────
+// ── Fetch single file content ─────────────────────────────────────
 export const fetchFileContent = async (owner, repo, filePath) => {
   try {
     const { data } = await githubAxios.get(
@@ -121,27 +123,43 @@ export const fetchFileContent = async (owner, repo, filePath) => {
     }
     return data.content;
   } catch {
-    return null; // skip files that fail to fetch
+    return null;
   }
 };
 
-// ── Main: fetch and chunk all important files ─────────────────────
+// ── Prioritize important files ────────────────────────────────────
+const prioritizeFiles = (files) => {
+  const priority = [
+    'readme', 'index', 'main', 'app', 'server',
+    'router', 'routes', 'controller', 'model',
+    'schema', 'middleware', 'auth', 'service',
+    'hook', 'context', 'util', 'helper', 'config',
+  ];
+
+  return [...files].sort((a, b) => {
+    const aName  = a.path.toLowerCase();
+    const bName  = b.path.toLowerCase();
+    const aScore = priority.findIndex((p) => aName.includes(p));
+    const bScore = priority.findIndex((p) => bName.includes(p));
+    if (aScore === -1 && bScore === -1) return 0;
+    if (aScore === -1) return 1;
+    if (bScore === -1) return -1;
+    return aScore - bScore;
+  });
+};
+
+// ── Main export ───────────────────────────────────────────────────
 export const fetchRepositoryCode = async (githubUrl) => {
   const { owner, repo } = parseGithubUrl(githubUrl);
 
-  // 1. Get repo info
-  const metadata = await fetchRepoMetadata(owner, repo);
+  const metadata    = await fetchRepoMetadata(owner, repo);
+  const allFiles    = await fetchFileTree(owner, repo, metadata.defaultBranch);
+  const filtered    = filterFiles(allFiles);
+  const prioritized = prioritizeFiles(filtered);
 
-  // 2. Get file tree
-  const allFiles = await fetchFileTree(owner, repo, metadata.defaultBranch);
+  console.log(`📁 Total files: ${allFiles.length}`);
+  console.log(`✅ Filtered to: ${filtered.length} analyzable files`);
 
-  // 3. Filter to only analyzable files
-  const filteredFiles = filterFiles(allFiles);
-
-  // 4. Prioritize important files first
-  const prioritized = prioritizeFiles(filteredFiles);
-
-  // 5. Fetch file contents until we hit the char limit
   let totalChars = 0;
   const codeChunks = [];
 
@@ -149,40 +167,59 @@ export const fetchRepositoryCode = async (githubUrl) => {
     if (totalChars >= MAX_TOTAL_CHARS) break;
 
     const content = await fetchFileContent(owner, repo, file.path);
-    if (!content) continue;
+    if (!content || content.trim().length === 0) continue;
 
-    const chunk = `\n\n// ── FILE: ${file.path} ──\n${content}`;
-    totalChars += chunk.length;
+    // Extra check — skip if content looks like CSS/JSON config
+    if (isCSSOrConfig(content)) {
+      console.log(`⏭ Skipping (CSS/config detected): ${file.path}`);
+      continue;
+    }
+
+    const remaining = MAX_TOTAL_CHARS - totalChars;
+    const trimmed   = content.length > remaining
+      ? content.substring(0, remaining) + '\n// [truncated]'
+      : content;
+
+    const chunk = `\n// FILE: ${file.path}\n${trimmed}`;
     codeChunks.push(chunk);
+    totalChars += chunk.length;
+
+    console.log(`📄 Added: ${file.path} (${trimmed.length} chars)`);
   }
 
+  console.log(`📦 Total code sent to AI: ${totalChars} chars from ${codeChunks.length} files`);
+
   return {
-    metadata: { ...metadata, owner, repo },
-    codeContent: codeChunks.join(''),
+    metadata:      { ...metadata, owner, repo },
+    codeContent:   codeChunks.join('\n'),
     filesAnalyzed: codeChunks.length,
-    totalFiles: allFiles.length,
+    totalFiles:    allFiles.length,
   };
 };
 
-// ── Prioritize which files to read first ─────────────────────────
-const prioritizeFiles = (files) => {
-  const priority = [
-    'readme', 'package.json', 'index', 'main', 'app',
-    'server', 'client', 'config', 'router', 'routes',
-    'controller', 'model', 'schema', 'middleware', 'auth',
-    'util', 'helper', 'service', 'hook', 'context',
-  ];
+// ── Detect CSS or pure config content ────────────────────────────
+const isCSSOrConfig = (content) => {
+  const trimmed = content.trim();
 
-  return [...files].sort((a, b) => {
-    const aName = a.path.toLowerCase();
-    const bName = b.path.toLowerCase();
+  // Starts with CSS selector patterns
+  if (/^[.#:*][\w-]+\s*\{/.test(trimmed)) return true;
 
-    const aScore = priority.findIndex((p) => aName.includes(p));
-    const bScore = priority.findIndex((p) => bName.includes(p));
+  // Mostly CSS properties like "color:", "font-size:", "background:"
+  const cssPatterns = (trimmed.match(/[\w-]+\s*:\s*[^;{]+;/g) || []).length;
+  const lines       = trimmed.split('\n').length;
+  if (lines > 5 && cssPatterns / lines > 0.4) return true;
 
-    if (aScore === -1 && bScore === -1) return 0;
-    if (aScore === -1) return 1;
-    if (bScore === -1) return -1;
-    return aScore - bScore;
-  });
+  // Pure JSON with no code logic
+  if (trimmed.startsWith('{') && !trimmed.includes('function') &&
+      !trimmed.includes('=>') && !trimmed.includes('const ') &&
+      !trimmed.includes('import ')) {
+    try {
+      JSON.parse(trimmed);
+      return true; // valid JSON with no code = config file
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 };
