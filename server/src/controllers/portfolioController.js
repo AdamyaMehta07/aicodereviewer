@@ -27,25 +27,37 @@ export const updateFeaturedProjects = async (req, res) => {
     const projects = await Project.find({
       _id: { $in: featuredProjects },
       owner: req.user._id,
-    });
+    }).populate('review');
 
     if (projects.length !== featuredProjects.length) {
-      return errorResponse(res, 'One or more projects not found or not authorized.', 400);
+      return errorResponse(res, 'One or more projects not found.', 400);
     }
 
-    // Calculate portfolio score as average of featured project scores
+    // Calculate portfolio score from featured projects reviews
     const completedProjects = projects.filter((p) => p.review);
+    
     let portfolioScore = 0;
     if (completedProjects.length > 0) {
-      const total = completedProjects.reduce((sum, p) => sum + (p.review?.overallScore || 0), 0);
+      const total = completedProjects.reduce(
+        (sum, p) => sum + (p.review.overallScore || 0), 0
+      );
       portfolioScore = Math.round(total / completedProjects.length);
     }
 
+    // Generate description
+    const allTech = [...new Set(projects.flatMap(p => p.techStack))].slice(0, 6);
+    const generatedDescription = completedProjects.length > 0
+      ? `${req.user.name} is a developer with ${completedProjects.length} featured project${completedProjects.length > 1 ? 's' : ''} averaging a portfolio score of ${portfolioScore}/100. Demonstrated skills include ${allTech.join(', ')}.`
+      : `${req.user.name} is a full-stack developer building a project portfolio on AiCodeReviewer.`;
+
     const portfolio = await Portfolio.findOneAndUpdate(
       { userId: req.user._id },
-      { featuredProjects, portfolioScore },
+      { featuredProjects, portfolioScore, generatedDescription },
       { new: true, upsert: true }
-    ).populate({ path: 'featuredProjects', populate: { path: 'review' } });
+    ).populate({
+      path: 'featuredProjects',
+      populate: { path: 'review' }
+    });
 
     return successResponse(res, { portfolio }, 'Portfolio updated successfully.');
   } catch (error) {
