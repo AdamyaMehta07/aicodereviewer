@@ -3,75 +3,85 @@ import { buildReviewPrompt } from '../prompts/reviewPrompt.js';
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = 'llama-3.1-8b-instant';
-
 const MAX_PROMPT_CHARS = 12000;
 
-// ── Call Groq API ─────────────────────────────────────────────────
 const callGroq = async (prompt) => {
-  // Extra safety — trim prompt if still too long
   const safePrompt = prompt.length > MAX_PROMPT_CHARS
-    ? prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[Code truncated for analysis]'
+    ? prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[Code truncated]'
     : prompt;
 
   const key = process.env.GROQ_API_KEY;
-
-  if (!key || key === 'your_groq_api_key' || key.trim() === '') {
-    throw new Error('GROQ_API_KEY is missing in .env file. Get your key from https://console.groq.com');
+  if (!key || key.trim() === '') {
+    throw new Error('GROQ_API_KEY is missing in environment variables.');
   }
 
-  const payload = {
-    model: MODEL,
-    messages: [{ role: 'user', content: safePrompt }],
-    temperature: 0.3,
-    max_tokens: 1500,
-  };
-
   try {
-    const { data } = await axios.post(GROQ_API_URL, payload, {
-      headers: {
-        Authorization: `Bearer ${key.trim()}`,
-        'Content-Type': 'application/json',
+    const { data } = await axios.post(
+      GROQ_API_URL,
+      {
+        model: MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a code review assistant. You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no text before or after the JSON. Just the raw JSON object starting with { and ending with }.',
+          },
+          {
+            role: 'user',
+            content: safePrompt,
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 1500,
       },
-      timeout: 60000,
-    });
+      {
+        headers: {
+          Authorization: `Bearer ${key.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 60000,
+      }
+    );
 
     return data.choices[0].message.content;
-
   } catch (err) {
-    // Log exact Groq error so we can debug
     const status = err.response?.status;
     const groqMsg = err.response?.data?.error?.message || JSON.stringify(err.response?.data);
 
-    console.error('❌ Groq API failed:');
-    console.error('   Status:', status);
-    console.error('   Message:', groqMsg);
-    console.error('   Model:', MODEL);
-    console.error('   Prompt length:', safePrompt.length, 'chars');
+    console.error('❌ Groq API failed:', status, groqMsg);
 
-    if (status === 401) throw new Error('Invalid Groq API key. Check GROQ_API_KEY in .env');
+    if (status === 401) throw new Error('Invalid Groq API key.');
     if (status === 429) throw new Error('Groq rate limit hit. Wait 1 minute and try again.');
     if (status === 400) throw new Error(`Groq rejected request: ${groqMsg}`);
-    if (status === 413) throw new Error('Prompt too large for Groq. Code was trimmed but still too big.');
 
-    throw new Error(`Groq API error (${status}): ${groqMsg || err.message}`);
+    throw new Error(`Groq API error (${status}): ${err.message}`);
   }
 };
 
-// ── Parse JSON from AI response ───────────────────────────────────
-const parseReviewJSON = (rawResponse) => {
-  try {
-    const cleaned = rawResponse
-      .replace(/```json\n?/gi, '')
-      .replace(/```\n?/gi, '')
-      .trim();
+// ── Try to extract JSON from any kind of response ─────────────────
+const extractJSON = (raw) => {
+  // Remove markdown code blocks
+  let cleaned = raw
+    .replace(/```json\n?/gi, '')
+    .replace(/```\n?/gi, '')
+    .trim();
 
-    // Find JSON object in response (sometimes AI adds text before/after)
-    const jsonStart = cleaned.indexOf('{');
-    const jsonEnd = cleaned.lastIndexOf('}');
-    if (jsonStart === -1 || jsonEnd === -1) {
-      throw new Error('No JSON found in response');
-    }
-    const jsonStr = cleaned.substring(jsonStart, jsonEnd + 1);
+  // Find first { and last }
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+
+  if (start === -1 || end === -1) {
+    console.error('❌ No JSON braces found in response:', cleaned.substring(0, 200));
+    throw new Error('AI did not return JSON. Please try again.');
+  }
+
+  return cleaned.substring(start, end + 1);
+};
+
+const parseReviewJSON = (rawResponse) => {
+  console.log('📄 Raw Groq response (first 300 chars):', rawResponse.substring(0, 300));
+
+  try {
+    const jsonStr = extractJSON(rawResponse);
     const parsed = JSON.parse(jsonStr);
 
     return {
@@ -85,16 +95,17 @@ const parseReviewJSON = (rawResponse) => {
       documentationScore:   clampScore(parsed.documentationScore),
       testingScore:         clampScore(parsed.testingScore),
       portfolioScore:       clampScore(parsed.portfolioScore),
-      strengths:            Array.isArray(parsed.strengths) ? parsed.strengths : [],
-      weaknesses:           Array.isArray(parsed.weaknesses) ? parsed.weaknesses : [],
-      recommendations:      Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
-      recruiterFeedback:    parsed.recruiterFeedback || '',
-      portfolioFeedback:    parsed.portfolioFeedback || '',
-      aiSummary:            parsed.aiSummary || '',
-      resumeSummary:        parsed.resumeSummary || '',
+      strengths:            toArray(parsed.strengths),
+      weaknesses:           toArray(parsed.weaknesses),
+      recommendations:      toArray(parsed.recommendations),
+      recruiterFeedback:    parsed.recruiterFeedback || 'No recruiter feedback generated.',
+      portfolioFeedback:    parsed.portfolioFeedback || 'No portfolio feedback generated.',
+      aiSummary:            parsed.aiSummary || 'No summary generated.',
+      resumeSummary:        parsed.resumeSummary || parsed.aiSummary || 'No resume summary generated.',
     };
   } catch (err) {
-    console.error('❌ Failed to parse Groq response:', err.message);
+    console.error('❌ JSON parse failed:', err.message);
+    console.error('❌ Full raw response:', rawResponse);
     throw new Error('AI returned malformed JSON. Please try again.');
   }
 };
@@ -105,23 +116,28 @@ const clampScore = (val) => {
   return Math.min(100, Math.max(0, Math.round(n)));
 };
 
-// ── Main export ───────────────────────────────────────────────────
+const toArray = (val) => {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') return [val];
+  return [];
+};
+
 export const generateAIReview = async (metadata, codeContent) => {
-  console.log('🤖 Sending to Groq — model:', MODEL);
-  console.log('📦 Code content length:', codeContent.length, 'chars');
+  console.log('🤖 Groq model:', MODEL);
+  console.log('📦 Code length:', codeContent.length, 'chars');
 
   const prompt = buildReviewPrompt(
     { ...metadata, totalFiles: metadata.totalFiles, filesAnalyzed: metadata.filesAnalyzed },
     codeContent
   );
 
-  console.log('📝 Total prompt length:', prompt.length, 'chars');
+  console.log('📝 Prompt length:', prompt.length, 'chars');
 
   const rawResponse = await callGroq(prompt);
-  console.log('✅ Groq responded, parsing JSON...');
+  console.log('✅ Groq responded');
 
   const review = parseReviewJSON(rawResponse);
-  console.log('✅ Review parsed successfully. Overall score:', review.overallScore);
+  console.log('✅ Parsed. Overall score:', review.overallScore);
 
   return review;
 };
